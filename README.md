@@ -17,10 +17,10 @@ db.status.ensureIndex({"pid":1},{unique:true});
 
 threads:
 db.threads.ensureIndex({"tid":1}, {unique:true});
-db.threads.ensureIndex( { "name": "text" }, {unique : true} );
+db.threads.ensureIndex({ "name": "text" });
 
 posts:
-db.posts.ensureIndex( { "message": "text" } );
+db.posts.ensureIndex({ "message": "text" });
 db.posts.ensureIndex({"tid":1});
 db.posts.ensureIndex({"pid":1},{unique:true});
 
