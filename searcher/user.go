@@ -6,9 +6,11 @@ import (
 )
 
 type User struct {
-	Id 				bson.ObjectId `json:"id"        bson:"_id,omitempty"`
-  UID 			int						`json:"uid"`
-  Username	string				`json:"username"`
+	Id 				    bson.ObjectId `json:"id"        bson:"_id,omitempty"`
+  UID 			    int						`json:"uid"`
+  Username			string				`json:"username"`
+  ProfileImage  string        `json:"profile_image"`
+  PostCount     int           `json:"post_count"`
 }
 
 type userSearcher struct {
@@ -54,6 +56,17 @@ func (us *userSearcher) Save(u *User) {
 	}
 
 	_, err := us.c.Upsert(bson.M{"uid": u.UID}, u)
+	if err != nil {
+	    panic("unable to save to DB")
+	}
+}
+
+func (us *userSearcher) IncrementPostCount(uid int) {
+	if us.closed {
+		panic("This searcher has been closed")
+	}
+	
+	err := us.c.Update(bson.M{"uid": uid}, bson.M{"$inc": bson.M{"postcount": 1}})
 	if err != nil {
 	    panic("unable to save to DB")
 	}

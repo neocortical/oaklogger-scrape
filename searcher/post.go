@@ -8,13 +8,15 @@ import (
 )
 
 type Post struct {
-	Id				bson.ObjectId `json:"id"        bson:"_id,omitempty"`
-	PID 			int						`json:"pid"`
-  TID 			int						`json:"tid"`
-  UID 			int						`json:"uid"`
-  Order     int 					`json:"order"`
-  Message string          `json:"message"`
-  PostTime time.Time      `json:"post_time"`
+	Id				  bson.ObjectId `json:"id"           bson:"_id,omitempty"`
+	PID 			  int						`json:"pid"`
+  TID 			  int						`json:"tid"`
+  UID 			  int						`json:"uid"`
+  Order       int 					`json:"order"`
+  Message     string        `json:"message"`
+  PostTime    time.Time     `json:"post_time"`
+  Edited      bool          `json:"edited"`
+  Orphan      bool          `json:"orphan"       bson:",omitempty"`
 }
 
 type Status struct {

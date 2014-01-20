@@ -7,6 +7,6 @@ import (
 
 func main() {
 	fmt.Printf("Starting scraper...\n")
-	go scraper.Scrape()
+	scraper.Scrape()
 	fmt.Printf("Interrupt detected ... exiting.\n")
 }

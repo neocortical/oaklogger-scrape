@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"net/http"
   "io/ioutil"
+	"unicode/utf8"
   "time"
   "regexp"
   "strconv"
   "bytes"
+  "strings"
 	"errors"
   "github.com/neocortical/oaklogger/searcher"
 )
@@ -16,9 +18,11 @@ type ScrapedMessage struct {
   ThreadName string
   UID int
   Username string
+  ProfileImage string
   Message string
   MessageTime time.Time
   Edited bool
+  HasPosts bool
 }
 
 const timeFormat = "15:04PM on 02 Jan 2006"
@@ -52,14 +56,36 @@ func Scrape() {
 			}
 		} else {
 			thread := threadSearcher.FindThread(m.ThreadName)
-			if thread == nil {
+			if m.HasPosts {
 				fmt.Printf("Inserting new thread: %s\n", m.ThreadName)
+				twinDetected := false
+				if thread != nil {
+					fmt.Printf("WARNING! Duplicate multipost threads detected: [%d, %d]: %s\n", thread.TID, pid, m.ThreadName)
+					thread.HasTwin = true
+					threadSearcher.Save(thread)
+					twinDetected = true
+				}
 				thread = buildThreadFromMessage(pid, m)
-			} else {
+				thread.HasTwin = twinDetected
+				threadSearcher.Save(thread)
+			} else if thread != nil {
 				thread.PostCount++
 				thread.LastPostTime = m.MessageTime
+				threadSearcher.Save(thread)
+			} else {
+				thread = threadSearcher.FindThreadByFirstWord(m.ThreadName)
+				if thread != nil {
+					fmt.Printf("Detected thread name prefix bug: %s -> %s\n", m.ThreadName, thread.Name)
+					m.ThreadName = thread.Name
+					thread.PostCount++
+					thread.LastPostTime = m.MessageTime
+				} else {
+					fmt.Printf("Orphan post detected: %d\n", pid)
+					thread = buildThreadFromMessage(pid, m)
+					thread.HasPosts = false
+				}
+				threadSearcher.Save(thread)
 			}
-			threadSearcher.Save(thread)
 			
 			postSearcher.Save(buildPostFromMessage(pid, m, thread))
 			postSearcher.UpdateStatus(pid, "success")
@@ -67,6 +93,8 @@ func Scrape() {
 			user := userSearcher.FindUser(m.UID)
 			if user == nil {
 				userSearcher.Save(buildUserFromMessage(m))
+			} else {
+				userSearcher.IncrementPostCount(m.UID)
 			}
 			
 			consecutiveFails = 0
@@ -93,7 +121,7 @@ func ScrapeMessage(url string) (*ScrapedMessage, error) {
 }
 
 func ParseBody(body []byte) (*ScrapedMessage, error) {
-  re := regexp.MustCompile("<title>\\s*((?ms:.*))\\s*\\-\\s+talk\\.oaklog\\.com</title>")
+  re := regexp.MustCompile("<title>\\s*((?ms:.*?))\\s+\\-\\s+talk\\.oaklog\\.com</title>")
   reThread := re.FindSubmatchIndex(body)
   
   re = regexp.MustCompile("<a href=http://www\\.oaklog\\.com/\\?a=view&u=([0-9]+) class=list><b>([^<]+)</b></a>")
@@ -105,20 +133,31 @@ func ParseBody(body []byte) (*ScrapedMessage, error) {
 	
   uid, _ := strconv.Atoi(string(body[reUser[2]:reUser[3]]))
 
+  re = regexp.MustCompile("<img src=\"http://oaklog\\.com/images/icons/([^\"]+)\"")
+  reProfileImage := re.FindSubmatchIndex(body)
+	profileImage := string(body[reProfileImage[2]:reProfileImage[3]])
+
   re = regexp.MustCompile("<td style=\"width: 85%; border\\-left: 0px solid #FFFFFF; border\\-top: 0px solid #FFFFFF\">\\s*((?ms:.+?))\\s*</td>")
   reMessage := re.FindSubmatchIndex(body)
+
+	hasPosts := false
+	if len(reMessage) > 0 {
+		hasPosts = len(re.FindSubmatchIndex(body[reMessage[1]:])) > 0
+	}
 
   re = regexp.MustCompile("(Last edited on\\s+)?([0-9]{2}):([0-9]{2})(am|pm) on ([0-9]{2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ([0-9]{4})")
   reTime := re.FindSubmatchIndex(body)
   time := parseMessageTime(body, reTime)
     
   return &ScrapedMessage{
-    string(body[reThread[2]:reThread[3]]), 
-    uid, 
-    string(body[reUser[4]:reUser[5]]), 
-    string(body[reMessage[2]:reMessage[3]]), 
-    time, 
-    reTime[2] != -1}, nil
+	    processSingleQuotes(utf8ify(string(body[reThread[2]:reThread[3]]))), 
+	    uid, 
+	    utf8ify(string(body[reUser[4]:reUser[5]])), 
+	    utf8ify(profileImage),
+	    utf8ify(string(body[reMessage[2]:reMessage[3]])), 
+	    time, 
+	    reTime[2] != -1, 
+	    hasPosts}, nil
 }
 
 func parseMessageTime(body []byte, i []int) time.Time {
@@ -174,17 +213,20 @@ func buildThreadFromMessage(pid int, m *ScrapedMessage) (*searcher.Thread) {
 	result.UID = m.UID
 	result.PostCount = 1
 	result.LastPostTime = m.MessageTime
+	result.HasPosts = m.HasPosts
 	return result
 }
 
 func buildPostFromMessage(pid int, m *ScrapedMessage, t *searcher.Thread) (*searcher.Post) {
 	result := new(searcher.Post)
 	result.PID = pid
-	result.TID = t.TID
-	result.UID = m.UID
+	result.TID = t.TID		
+	result.Orphan = !t.HasPosts
 	result.Order = t.PostCount
+	result.UID = m.UID
 	result.Message = m.Message
 	result.PostTime = m.MessageTime
+	result.Edited = m.Edited
 	return result
 }
 
@@ -192,5 +234,31 @@ func buildUserFromMessage(m *ScrapedMessage) (*searcher.User) {
 	result := new(searcher.User)
 	result.UID = m.UID
 	result.Username = m.Username
+	result.ProfileImage = m.ProfileImage
+	result.PostCount = 1
 	return result
+}
+
+func utf8ify(s string) (string) {
+	if !utf8.ValidString(s) {
+		v := make([]rune, 0, len(s))
+		for i, r := range s {
+			if r == utf8.RuneError {
+				_, size := utf8.DecodeRuneInString(s[i:])
+				if size == 1 {
+					continue
+				}
+			}
+			v = append(v, r)
+		}
+		s = string(v)
+	}
+	
+	return s
+}
+
+func processSingleQuotes(s string) (string) {
+	s = strings.Split(s, "'")[0]
+	s = strings.Replace(s, "&#39;", "'", -1)
+	return s
 }
